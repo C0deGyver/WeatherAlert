@@ -4,10 +4,15 @@
 # Copyright 2015 by David Daniluk (C0deGyver)
 # GNU General Public License
 
-from getpass import getuser
 import os.path
 import configparser
-import RPi.GPIO as GPIO
+try:
+    import RPi.GPIO as GPIO
+    from getpass import getuser
+    rpi = True
+except ImportError:
+    from tkinter import *
+    rpi = False
 from time import strftime, sleep
 from sys import exit
 import subprocess
@@ -15,12 +20,12 @@ import threading
 import urllib.request
 import re
 
-# stops the program from being run with out root privileges for GPIO
-if (getuser() != "root"):
+# notifyStops the program from being run with out root privileges for GPIO
+if (rpi and getuser() != "root"):
     exit("Must be run as root or with sudo privileges.")
 
 # program version string
-programVersion = "5.4.0b"
+programVersion = "6.0.0b"
 # WARNING this program is in beta
 #   looking for people willing to test my program
 
@@ -29,11 +34,16 @@ config = configparser.ConfigParser(allow_no_value = True)
 # adding a comment function to configparser
 configparser.ConfigParser.add_comment = lambda self, section, option: self.set(section, '# '+option)
 
-# vars to hold results for notification process
+# vars to hold current results for notification process
 global results
 
-# var to stop notification process
-global stop
+# var to notifyStop notification process
+global notifyStop
+global workerStop
+workerStop = False
+global wrapCutoff
+global logCorrect
+logCorrect = True
 
 # checks to see if the pin in section is a board number
 def checkBoardPins(section, pin, logLevel):
@@ -189,6 +199,7 @@ def writeAlertIni():
 
 # reads the main section of the config
 def readMainSection():
+    global logCorrect
     # setting vars for future use
     file = open('WeatherAlert.ini', 'r')
     config.readfp(file)
@@ -213,7 +224,8 @@ def readMainSection():
     # checks program version string against config version string for major updates
     #   if not then warns user and exits program
     if (pp != cp):
-        log(logLevel, 2, "Config file not in current version major changes have happened. Please back up your file and allow the program to create a new example.")
+        logCorrect = False
+        log("4", 2, "Config file not in current version major changes have happened. Please back up your file and allow the program to create a new example.")
         exit("Config file not in current version! Check the log.")
 
     # checks the waittine to make sure it is an integer
@@ -279,44 +291,48 @@ def readMainSection():
         log(logLevel, 2, "alertWait is not set to an acceptable value. Must be a unsigned number.")
         exit("Config file not properly setup! Check the log.")
 
-    # check for board numbering plan
-    if (boardNumberingPlan == "board"):
-        GPIO.setmode(GPIO.BOARD)
-        logString = "boardNumberingPlan is set to: " + boardNumberingPlan
-        log(logLevel, 3, logString)
+    # checks to see if the pc is a rpi
+    if rpi:
+        log(logLevel, "3", "Rpi machine found using GPIO")
 
-        # setup mute button pin
-        if (checkBoardPins("muteButtonPin", muteButtonPin, logLevel)):
-            GPIO.setup(muteButtonPin, GPIO.IN)
-            logString = "GPIO for mute set: " + str(muteButtonPin)
+        # check for board numbering plan
+        if (boardNumberingPlan == "board"):
+            GPIO.setmode(GPIO.BOARD)
+            logString = "boardNumberingPlan is set to: " + boardNumberingPlan
             log(logLevel, 3, logString)
 
-        if (alarmOutput and checkBoardPins("alarmOutputPin", alarmOutputPin, logLevel)):
-            GPIO.setup(alarmOutputPin, GPIO.OUT)
-            logString = "GPIO for alarm output set: " + str(alarmOutputPin)
+            # setup mute button pin
+            if (checkBoardPins("muteButtonPin", muteButtonPin, logLevel)):
+                GPIO.setup(muteButtonPin, GPIO.IN)
+                logString = "GPIO for mute set: " + str(muteButtonPin)
+                log(logLevel, 3, logString)
+
+            if (alarmOutput and checkBoardPins("alarmOutputPin", alarmOutputPin, logLevel)):
+                GPIO.setup(alarmOutputPin, GPIO.OUT)
+                logString = "GPIO for alarm output set: " + str(alarmOutputPin)
+                log(logLevel, 3, logString)
+
+        # check for bcm numbering plan
+        elif (boardNumberingPlan == "bcm"):
+            GPIO.setmode(GPIO.BCM)
+            logString = "boardNumberingPlan is set to: " + boardNumberingPlan
             log(logLevel, 3, logString)
 
-    # check for bcm numbering plan
-    elif (boardNumberingPlan == "bcm"):
-        GPIO.setmode(GPIO.BCM)
-        logString = "boardNumberingPlan is set to: " + boardNumberingPlan
-        log(logLevel, 3, logString)
+            # setup mute button pin
+            if (checkBcmPins("muteButtonPin", muteButtonPin, logLevel)):
+                GPIO.setup(muteButtonPin, GPIO.IN)
+                logString = "GPIO for mute set: " + str(muteButtonPin)
+                log(logLevel, 3, logString)
 
-        # setup mute button pin
-        if (checkBcmPins("muteButtonPin", muteButtonPin, logLevel)):
-            GPIO.setup(muteButtonPin, GPIO.IN)
-            logString = "GPIO for mute set: " + str(muteButtonPin)
-            log(logLevel, 3, logString)
-
-        if (alarmOutput and checkBcmPins("alarmOutputPin", alarmOutputPin, logLevel)):
-            GPIO.setup(alarmOutputPin, GPIO.OUT)
-            logString = "GPIO for alarm output set: " + str(alarmOutputPin)
-            log(logLevel, 3, logString)
-                
-    # if not board or bcm exit program with error
-    else:
-        log(logLevel, 2, "boardNumberingPlan is not set to an acceptable value. Must be either board or bcm.")
-        exit("Config file not properly setup! Check the log.")
+            if (alarmOutput and checkBcmPins("alarmOutputPin", alarmOutputPin, logLevel)):
+                GPIO.setup(alarmOutputPin, GPIO.OUT)
+                logString = "GPIO for alarm output set: " + str(alarmOutputPin)
+                log(logLevel, 3, logString)
+                    
+        # if not board or bcm exit program with error
+        else:
+            log(logLevel, 2, "boardNumberingPlan is not set to an acceptable value. Must be either board or bcm.")
+            exit("Config file not properly setup! Check the log.")
 
     # checks mute button action for proper setup if not exit program with error
     if not (muteButtonAction == "read" or muteButtonAction == "mute"):
@@ -337,24 +353,21 @@ def readMainSection():
 # replacement for linux grep command
 def grep(string, pattern):
     temp = re.findall(r'^.*%s.*?$' % pattern, string, flags = re.M)
-    # for true grep like results: return "\n".join(re.findall(r'^.*%s.*?$' % pattern, string, flags = re.M))
+    # for true grep like results return "\n".join(re.findall(r'^.*%s.*?$' % pattern, string, flags = re.M))
     return temp[1]
 
 # a function to handle notifications
 def notify():
     # setting up vars
     global resulte
-    global stop
-    stop = False    
+    global notifyStop
+    notifyStop = False
     memory = []
-
-    # adds event detection for mute button
-    GPIO.add_event_detect(muteButtonPin, GPIO.RISING)
-
     # transfer results to memory
     for r in range(len(results)):
         memory.append(results[r])
-    while not stop:
+
+    while not notifyStop:
         try: 
             # if the mute button is pressed do appropriate action according to config
             if (GPIO.event_detected(muteButtonPin)):
@@ -369,7 +382,7 @@ def notify():
                         log(logLevel, 3, logString)
                         #subprocess.call("espeak -s 120 --stdout " + "'" + memory[l] + "' | aplay -q", shell=True)
                 memory = []
-                stop = True
+                notifyStop = True
             # notifies user as often as user has requested in config file
             else:
                 
@@ -382,115 +395,208 @@ def notify():
                     GPIO.output(alarmOutputPin, 0)
                 sleep(alertWait - alarmOutputTime)
         except KeyboardInterrupt:
-            stop = True
+            notifyStop = True
 
 # a function that gets the alerts to be notified
 def worker():
-    # setting up vars
-    global results
-    currentResults = []
-    prevResults = []
-    
-    # loops endlessly to gather notifications
-    while True:
-        # setting up thread for possible use
-        notification = threading.Thread(target = notify, name = "worker")
-
-        # setting vars for future use
-        file = open('WeatherAlert.ini', 'r')
-        config.readfp(file)
-        sections = config.sections()
-        results = []
-        remove = []
-
-        # removes the main section from the list so we can process user imputed sections
-        sections.pop(0)
-
-        # processes user imputed sections
-        for i in range(len(sections)):
-            # creates array of keys to process
-            keys = list(config[sections[i]].keys())
-            # check to make sure only zone or county is used in one key
-            if (("zone" in keys) and ("county" in keys)):
-                # if both are used exit program with error
-                logString = "More than one parameter set in section: " + config.sections[i] + ". Only use zone OR county in one section."
-                log(logLevel, 2, logString)
-                exit("Config file not properly setup! Check the log.")
-            else:
-                # if a key is a zone use zone rss address
-                if ("zone" in keys):
-                    rssAddress = "http://alerts.weather.gov/cap/wwaatmget.php?x=" + config[sections[i]].get("state").upper() + "Z" + config[sections[i]].get("zone") + "&y=1"
-                    logString = "User keyed section of config #" + str(i) + " Zone: " + config[sections[i]].get("state") + " " + config[sections[i]].get("zone") + " " + config[sections[i]].get("alertwatch")
-                    log(logLevel, 3, logString)
-                # if a key is a county use county rss address
-                elif ("county" in keys):
-                    rssAddress = "http://alerts.weather.gov/cap/wwaatmget.php?x=" + config[sections[i]].get("state").upper() + "C" + config[sections[i]].get("county") + "&y=1"
-                    logString = "User keyed section of config #" + str(i) + " County: " + config[sections[i]].get("state") + " " + config[sections[i]].get("county") + " " + config[sections[i]].get("alertwatch")
-                    log(logLevel, 3, logString)
-                # if a key is a state use state rss address
-                else:
-                    rssAddress = "http://alerts.weather.gov/cap/" + config[sections[i]].get("state") + ".php?x=1"
-                    logString = "User keyed section of config #" + str(i) + " " + " State: " + config[sections[i]].get("state") + " " + config[sections[i]].get("alertwatch")
-                    log(logLevel, 3, logString)
-                # use request to obtain all alerts in the requested areas
-                indResults = urllib.request.urlopen(rssAddress)
-                # decodes into human readable
-                indResults = indResults.read().decode('utf-8')
-                # searches text for alerts and do some replacements
-                indResults = grep(indResults, "<title>").lower().replace("<title>", "").replace("nws", "national weather service").replace("cdt", "").replace("mst", "")
-                # split the results into an array for processing later
-                indResults = indResults.split("</title>")
-                # creates one array containing all relevant alerts
-                if (config[sections[i]].get("alertwatch") in indResults[0]):
-                    results.append(indResults[0])
-                    currentResults.append(indResults[0])
-
-        # stages the removal of already notified alerts
-        for a in range(len(results)):
-            for b in range(len(prevResults)):
-                if (results[a] == prevResults[b]):
-                    remove.append(results[a])
-        # removes staged alerts
-        for c in range(len(remove)):
-            results.remove(remove[c])
-
-        # stops alert thread if the alerts are no longer there
-        if (len(currentResults) == 0):
-            stop = True
-
-        # processes the alerts if they exist
-        if (len(results) > 0):
-            stop = False
-            # starts notification process
-            notification.start()
-            if waitTime == 0:
-                notification.join()
-            # sets prevResults to results to prevent warning more than once about the same alert
-            prevResults = currentResults
-        # if already reported logs nothing to report
-        else:
-            log(logLevel, 3, "All results have been alerted already.")
-        # resets current results
+        # setting up vars
+        global results
+        global workerStop
         currentResults = []
-        # waits the amount of time the user specified
-        if (waitTime > 0):
-            logString = "Waiting " + str(waitTime) + " seconds until next run."
-            log(logLevel, 3, logString)
-            sleep(waitTime)
-        else:
-            break
+        prevResults = []
+        global wrapCutoff
+        
+        # loops endlessly to gather notifications
+        while not workerStop:
+            # checks to see if the pc is a rpi
+            if rpi:
+                # setting up thread for possible use
+                notification = threading.Thread(target = notify, name = "worker")
+            # setting vars for future use
+            file = open('WeatherAlert.ini', 'r')
+            config.readfp(file)
+            sections = config.sections()
+            results = []
+            remove = []
+
+            # removes the main section from the list so we can process user imputed sections
+            sections.pop(0)
+
+            # processes user imputed sections
+            for i in range(len(sections)):
+                # creates array of keys to process
+                keys = list(config[sections[i]].keys())
+                # check to make sure only zone or county is used in one key
+                if (("zone" in keys) and ("county" in keys)):
+                    # if both are used exit program with error
+                    logString = "More than one parameter set in section: " + config.sections[i] + ". Only use zone OR county in one section."
+                    log(logLevel, 2, logString)
+                    exit("Config file not properly setup! Check the log.")
+                else:
+                    # if a key is a zone use zone rss address
+                    if ("zone" in keys):
+                        rssAddress = "http://alerts.weather.gov/cap/wwaatmget.php?x=" + config[sections[i]].get("state").upper() + "Z" + config[sections[i]].get("zone") + "&y=1"
+                        rssAddress = "http://www.okblasters.com/test1.html"
+                        logString = "User keyed section of config #" + str(i) + " Zone: " + config[sections[i]].get("state") + " " + config[sections[i]].get("zone") + " " + config[sections[i]].get("alertwatch")
+                        log(logLevel, 3, logString)
+                    # if a key is a county use county rss address
+                    elif ("county" in keys):
+                        rssAddress = "http://alerts.weather.gov/cap/wwaatmget.php?x=" + config[sections[i]].get("state").upper() + "C" + config[sections[i]].get("county") + "&y=1"
+                        rssAddress = "http://www.okblasters.com/test2.html"
+                        logString = "User keyed section of config #" + str(i) + " " + " County: " + config[sections[i]].get("state") + " " + config[sections[i]].get("county") + " " + config[sections[i]].get("alertwatch")
+                        log(logLevel, 3, logString)
+                    # if a key is a state use state rss address
+                    else:
+                        rssAddress = "http://alerts.weather.gov/cap/" + config[sections[i]].get("state") + ".php?x=1"
+                        logString = "User keyed section of config #" + str(i) + " " + " State: " + config[sections[i]].get("state") + " " + config[sections[i]].get("alertwatch")
+                        log(logLevel, 3, logString)
+                    # use request to obtain all alerts in the requested areas
+                    indResults = urllib.request.urlopen(rssAddress)
+                    # decodes into human readable
+                    indResults = indResults.read().decode('utf-8')
+                    # searches text for alerts and do some replacements
+                    indResults = grep(indResults, "<title>").lower().replace("<title>", "").replace("nws", "national weather service").replace("cdt", "").replace("mst", "")
+                    # split the results into an array for processing later
+                    indResults = indResults.split("</title>")
+                    # creates one array containing all relevant alerts
+                    if (config[sections[i]].get("alertwatch") in indResults[0]):
+                        results.append(indResults[0])
+                        currentResults.append(indResults[0])
+
+            # stages the removal of already notified alerts
+            for a in range(len(results)):
+                for b in range(len(prevResults)):
+                    if (results[a] == prevResults[b]):
+                        remove.append(results[a])
+            # removes staged alerts
+            for c in range(len(remove)):
+                results.remove(remove[c])
+
+            # notifyStops alert thread if the alerts are no longer there
+            if (len(results) == 0):
+                notifyStop = True
+                if not rpi:
+                    root.withdraw()
+
+            # processes the alerts if they exist
+            if (len(results) > 0):
+                notifyStop = False
+                # checks to see if the pc is a rpi
+                if rpi:
+                    # starts notification process
+                    notification.start()
+                    if waitTime == 0:
+                        notification.join()
+                else:
+                    delete = alertFrame.winfo_children()
+                    for d in alertFrame.winfo_children():
+                        d.pack_forget()
+                    for l in range(len(results)):
+                        logString = "Results #" + str(l) + ": '" + results[l] + "' was alerted."
+                        log(logLevel, 3, logString)
+                        label = Label(alertFrame, wraplength = wrapCutoff, justify = LEFT, text=results[l])
+                        #label.grid(column = 0, row = l)
+                        label.pack(side = TOP, expand = 1, fill = X)
+                    alertFrame.update_idletasks()
+                    root.deiconify()                
+                # sets prevResults to results to prevent warning more than once about the same alert
+                prevResults = currentResults
+            # if already reported logs nothing to report
+            else:
+                log(logLevel, 3, "All results have been alerted already.")
+            # resets current results
+            currentResults = []
+            # waits the amount of time the user specified
+            if (waitTime > 0):
+                logString = "Waiting " + str(waitTime) + " seconds until next run."
+                log(logLevel, 3, logString)
+                sleep(waitTime)
+            else:
+                workerStop = True
+
+# resets alert canvas
+def onFrameConfigure(alertCanvas):
+    alertCanvas.configure(scrollregion=alertCanvas.bbox("all"))
+
+# resizes the wrap length of alert labels
+def onResize(event, alertCanvas):
+    for l in alertCanvas.winfo_children():
+        l.configure(wraplength = event.width - 20)
+
+# hides tk window
+def alertsRead(root):
+    if (waitTime > 0):
+        root.withdraw()
+    else:
+        root.destroy()
+    
+# checks for keyboard interrupt
+def checkInterrupt(root):
+    try:
+        root.after(1, checkInterrupt, root)
+    except KeyboardInterrupt:
+        root.destroy()
 
 # setup for Keyboard Interrupt
 try:
     # check if config exists
     configExists = os.path.isfile('WeatherAlert.ini')
+    global wrapCutoff
 
     # if true read all of the main settings in
     # and run the normal program
     if (configExists):
         # setting vars for future use
         configVersion, logLevel, waitTime, boardNumberingPlan, muteButtonPin, muteButtonAction, alarmOutput, alarmOutputPin, alarmOutputTime, alertWait = readMainSection()
-        worker()
+        # checks to see if the pc is a rpi
+        if rpi:
+            # adds event detection for mute button
+            GPIO.add_event_detect(muteButtonPin, GPIO.RISING)
+            # calls function to get alerts
+            worker()
+        else:
+            log(logLevel, "3", "nonRpi os detected")
+            working = threading.Thread(target = worker)
+            working.start()
+            root = Tk()
+            root.title("Weather Alerts")
+
+            # setting up window geometry
+            startWidth = (root.winfo_screenwidth() / 3)
+            startHeight = (root.winfo_screenheight() / 3)
+            root.wm_geometry("%dx%d+%d+%d" % (startWidth, startHeight, 0, 0 ))
+
+            # frames for holding all widgets
+            topFrame = Frame(root)
+            topFrame.pack(side = TOP, expand = 1, fill = BOTH)
+            bottomFrame = Frame(root)
+            bottomFrame.pack(side = BOTTOM, expand = 0, fill = X)
+
+            # alert containers
+            alertCanvas = Canvas(topFrame)
+            alertCanvas.pack(side = LEFT, expand = 1, fill = BOTH)
+            alertFrame = Frame(alertCanvas)
+            alertFrame.pack(side = TOP, expand = 1, fill = BOTH)
+            alertFrame.bind("<Configure>", lambda event, alertCanvas = alertCanvas: onFrameConfigure(alertCanvas))
+            topFrame.bind("<Configure>", lambda event, alertFrame = alertFrame: onResize(event, alertFrame))
+
+            # scrollbar
+            scrollbar = Scrollbar(topFrame, orient="vertical", command=alertCanvas.yview)
+            scrollbar.pack(side = LEFT, fill = Y)
+            alertCanvas.configure(yscrollcommand = scrollbar.set)
+            alertCanvas.create_window((0,0), window = alertFrame, anchor = "nw")
+
+            # okay button to close window
+            button = Button(bottomFrame, text='Okay', command = lambda: alertsRead(root))
+            button.pack(side = TOP, fill = X)
+
+            # cut off for label text
+            wrapCutoff = startWidth - 20
+
+            root.after(1, checkInterrupt, root)
+            root.withdraw()
+            root.mainloop()
+
     # if config is missing creates one
     else:
         log("4", 2, "The config file is missing... Creating one.")
@@ -504,15 +610,19 @@ except KeyboardInterrupt:
         log("4", 2, "\nKeyboard interrupt has been activated.")
     else:
         log(logLevel, 2, "\nKeyboard interrupt has been activated.")
-
     # terminate notification thread safely
     if (threading.active_count() > 1):
-        stop = True
-        # log thread stop
+        if rpi:
+            notifyStop = True
+        else:
+            workerStop = True
+            root.destroy()
+
+        # log thread notifyStop
         if not configExists:
             log("4", 2, "Stopping notification.")
         else:
-            log(logLevel, 2, "Stopping notification.")   
+            log(logLevel, 2, "Stopping notification.")
 
 finally:
     # wait for notification thread to terminate safely
@@ -521,15 +631,22 @@ finally:
             sleep(0.25)
 
     # program not on first run needs to clean up GPIO
-    if (configExists):
+    if (rpi and configExists):
         GPIO.remove_event_detect(muteButtonPin)
         sleep(1)
         GPIO.cleanup()
+
         # log gpio clean up
         log(logLevel, 2, "GPIO cleaned up.")
 
-    # log program shutting down
+    # destroys tk's loop
+    if (not rpi and configExists and threading.active_count() > 1):
+        root.destroy()
+
+    #log program shutting down    
     if not configExists:
+        log("4", 2, "Program shutting down.")
+    elif not (logCorrect):
         log("4", 2, "Program shutting down.")
     else:
         log(logLevel, 2, "Program shutting down.")
