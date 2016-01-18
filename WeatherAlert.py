@@ -25,7 +25,7 @@ if (rpi and getuser() != "root"):
     exit("Must be run as root or with sudo privileges.")
 
 # program version string
-programVersion = "6.0.0b"
+programVersion = "6.1.1b"
 # WARNING this program is in beta
 #   looking for people willing to test my program
 
@@ -128,7 +128,7 @@ def writeAlertIni():
     config.add_comment("main", "the 1 setting results in no logging.")
     config.add_comment("main", "the 2 setting results major error logging.")
     config.add_comment("main", "the 3 setting is the most logging, meant for error reporting.")
-    config.set("main", "logLevel", "3\n")
+    config.set("main", "logLevel", "2\n")
 
     config.add_comment("main", "the amount of time the programs waits between weather checks -- value can be any number.")
     config.add_comment("main", "the setting of 0 will make the program run only once (intended for use when put in chrontab)")
@@ -380,14 +380,12 @@ def notify():
                     for l in range(len(memory)):
                         logString = "Results #" + str(l) + ": '" + memory[l] + "' was alerted."
                         log(logLevel, 3, logString)
-                        #subprocess.call("espeak -s 120 --stdout " + "'" + memory[l] + "' | aplay -q", shell=True)
+                        subprocess.call("espeak -s 120 --stdout " + "'" + memory[l] + "' | aplay -q", shell=True)
                 memory = []
                 notifyStop = True
             # notifies user as often as user has requested in config file
             else:
-                
                 log(logLevel, 3, "Alert detected... Notifing the user.")
-                #subprocess("mplayer alarm.wav", shell=True)
                 # turns the alarm output pin on/off
                 if (alarmOutput):
                     GPIO.output(alarmOutputPin, 1)
@@ -436,13 +434,11 @@ def worker():
                     # if a key is a zone use zone rss address
                     if ("zone" in keys):
                         rssAddress = "http://alerts.weather.gov/cap/wwaatmget.php?x=" + config[sections[i]].get("state").upper() + "Z" + config[sections[i]].get("zone") + "&y=1"
-                        rssAddress = "http://www.okblasters.com/test1.html"
                         logString = "User keyed section of config #" + str(i) + " Zone: " + config[sections[i]].get("state") + " " + config[sections[i]].get("zone") + " " + config[sections[i]].get("alertwatch")
                         log(logLevel, 3, logString)
                     # if a key is a county use county rss address
                     elif ("county" in keys):
                         rssAddress = "http://alerts.weather.gov/cap/wwaatmget.php?x=" + config[sections[i]].get("state").upper() + "C" + config[sections[i]].get("county") + "&y=1"
-                        rssAddress = "http://www.okblasters.com/test2.html"
                         logString = "User keyed section of config #" + str(i) + " " + " County: " + config[sections[i]].get("state") + " " + config[sections[i]].get("county") + " " + config[sections[i]].get("alertwatch")
                         log(logLevel, 3, logString)
                     # if a key is a state use state rss address
@@ -476,6 +472,7 @@ def worker():
             if (len(results) == 0):
                 notifyStop = True
                 if not rpi:
+					# hids the tk window
                     root.withdraw()
 
             # processes the alerts if they exist
@@ -488,17 +485,23 @@ def worker():
                     if waitTime == 0:
                         notification.join()
                 else:
+					# captures previous notification(s)
                     delete = alertFrame.winfo_children()
+					# deletes labels for previous notification(s)
                     for d in alertFrame.winfo_children():
                         d.pack_forget()
+					# adds labels for current notification(s)
                     for l in range(len(results)):
+						# logs the notification(s)
                         logString = "Results #" + str(l) + ": '" + results[l] + "' was alerted."
                         log(logLevel, 3, logString)
                         label = Label(alertFrame, wraplength = wrapCutoff, justify = LEFT, text=results[l])
-                        #label.grid(column = 0, row = l)
                         label.pack(side = TOP, expand = 1, fill = X)
+					# forces the alert frame to refresh
                     alertFrame.update_idletasks()
-                    root.deiconify()                
+					# un-hides the tk window
+                    root.deiconify()        
+
                 # sets prevResults to results to prevent warning more than once about the same alert
                 prevResults = currentResults
             # if already reported logs nothing to report
@@ -512,6 +515,7 @@ def worker():
                 log(logLevel, 3, logString)
                 sleep(waitTime)
             else:
+				# breaks the loop
                 workerStop = True
 
 # resets alert canvas
@@ -555,9 +559,12 @@ try:
             # calls function to get alerts
             worker()
         else:
+			# logs nonRpi os
             log(logLevel, "3", "nonRpi os detected")
+			# starts worker in background / another thread
             working = threading.Thread(target = worker)
             working.start()
+			# makes tk window to show alerts
             root = Tk()
             root.title("Weather Alerts")
 
